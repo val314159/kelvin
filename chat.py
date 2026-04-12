@@ -205,12 +205,12 @@ TOOL_INDEX = {
 # END INLINED TOOLS
 # =============================================================================
 
+# Unix permission constants (core architectural choices)
 PERM_IMMUTABLE = 0o444  # read-only for all
 PERM_MUTABLE = 0o644    # read-write for owner, read-only for others
 PERM_DIRECTORY = 0o755  # read/write/execute for owner, read/execute for others
 
 class ChatCLI:
-    # Unix permission constants (core architectural choices)
 
     def lab_home(self) -> Path:
         return Path.home() / '.kelvin.d'
