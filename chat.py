@@ -213,7 +213,7 @@ class ChatCLI:
     # Unix permission constants (core architectural choices)
 
     def lab_home(self) -> Path:
-        return Path.home() / '.lab'
+        return Path.home() / '.kelvin.d'
 
     def get_context_convos_dir(self) -> Path:
         return self.context / 'convos'
