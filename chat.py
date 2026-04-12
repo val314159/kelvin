@@ -146,10 +146,9 @@ def bounce_sandbox(path: str):
 # =============================================================================
 
 def shell_tool(cmd: str) -> Dict[str, Any]:
-    """Execute shell command in Docker container and return structured result for tool calling."""    
     try:
         result = subprocess.run(
-            ["docker", "exec", "-it", "-w", str(Path.cwd()),
+            ["docker", "exec", "-w", str(Path.cwd()),
              "sandbox", "sh", "-c", cmd],
             capture_output=True,
             text=True,
@@ -216,7 +215,7 @@ class ChatCLI:
         return Path.home() / '.kelvin.d'
 
     def get_context_convos_dir(self) -> Path:
-        return self.context / 'convos'
+        return self.context / '.kelvin'
 
     def get_context_state_file(self) -> Path:
         return self.get_context_convos_dir() / 'context_state.json'
@@ -589,7 +588,7 @@ class ChatCLI:
         injected_txt_path = self.context / 'injected.txt'
         injected_files.extend(self.load_injected_file(injected_txt_path))
         # Manual injections from local.injected.txt
-        local_injected_path = self.context / 'convos' / 'local.injected.txt'
+        local_injected_path = self.get_context_convos_dir() / 'local.injected.txt'
         manual_injections = self.load_injected_file(local_injected_path, check_duplicates=False)
         injected_files.extend(manual_injections)
         return injected_files
@@ -649,7 +648,7 @@ class ChatCLI:
     
     def create_convo_symlink(self, convo_id: str, name: str):
         """Create symlink to conversation in current context."""
-        context_convos_dir = self.context / 'convos'
+        context_convos_dir = self.get_context_convos_dir()
         context_convos_dir.mkdir(exist_ok=True)
         # Sanitize name for filename
         safe_name = name.lower().replace(' ', '-').replace('/', '-')
@@ -691,7 +690,7 @@ class ChatCLI:
 
     def chat(self, messages, stream, use_tools=True):
         tools = self.get_available_tools() if use_tools else None
-        print("TOOLS", tools)
+        #print("TOOLS", tools)
         response = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
@@ -915,7 +914,7 @@ class ChatCLI:
         """Handle conversation commands."""
         if not args:
             # List conversations in current context
-            convos_dir = self.context / 'convos'
+            convos_dir = self.get_context_convos_dir()
             if convos_dir.exists():
                 print("Conversations in this context:")
                 for symlink in convos_dir.glob(YAML_PAT):
@@ -940,7 +939,7 @@ class ChatCLI:
         else:
             # Switch to existing conversation
             convo_name = args[0]
-            convos_dir = self.context / 'convos'
+            convos_dir = self.get_context_convos_dir()
             symlink_path = convos_dir / f"{convo_name}.yaml"
             if symlink_path.exists() and symlink_path.is_symlink():
                 target = symlink_path.readlink()
@@ -1024,7 +1023,7 @@ class ChatCLI:
     
     def handle_inject(self, args: List[str]):
         """Handle file injection using local.injected.txt."""
-        local_injected_path = self.context / 'convos' / 'local.injected.txt'
+        local_injected_path = self.get_context_convos_dir() / 'local.injected.txt'
         if not args:
             print("Currently injected files:")
             for injected in self.get_injected_files():
@@ -1262,7 +1261,7 @@ class ChatCLI:
         """Execute a tool call using the inlined TOOL_INDEX."""
         function_name = tool_call.function.name
         arguments = json.loads(tool_call.function.arguments)
-        print(f"DEBUG: Executing tool: {function_name} with args: {arguments}")
+        print(f"DEBUG: Executing tool: {function_name} with args: {str(arguments)[:40]}")
         # Look up function in TOOL_INDEX
         if function_name in TOOL_INDEX:
             try:
