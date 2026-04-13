@@ -7,7 +7,15 @@ authors = [
     { name = "@val314159", email = "jmward@gmail.com" }
 ]
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "docopt-ng>=0.9.0",
+    "openai>=2.31.0",
+    "prompt-toolkit>=3.0.52",
+    "PyYAML>=6.0.2",
+]
+
+[project.scripts]
+kelvin = "kelvin.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.10.0,<0.11.0"]
