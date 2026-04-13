@@ -1,6 +1,5 @@
 from collections.abc import Mapping
 from typing import Any, Dict, Optional
-
 from pathlib import Path
 
 import yaml as pyyaml
@@ -85,5 +84,5 @@ class KelvinHome:
                         raise ValueError(f"Config at {config_override} must be a mapping")
                     default_config.update(loaded_config)
                 except OSError:
-                    print(f"Warning: Failed to load config from {config_path}")
+                    print(f"Warning: Failed to load config from {config_override}")
         return default_config

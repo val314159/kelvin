@@ -1,7 +1,7 @@
 [project]
 name = "kelvin"
 version = "0.1.0"
-description = "Add your description here"
+description = "Lab Infra Chat CLI with persistent storage and tool calling"
 readme = "README.md"
 authors = [
     { name = "@val314159", email = "jmward@gmail.com" }
@@ -20,3 +20,6 @@ kelvin = "kelvin.cli:main"
 [build-system]
 requires = ["uv_build>=0.10.0,<0.11.0"]
 build-backend = "uv_build"
+
+[tool.uv_build]
+include = ["src/kelvin/prompts/**/*"]
