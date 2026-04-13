@@ -21,6 +21,31 @@ class KelvinHome:
     def prompts_dir(self) -> Path:
         return self.root / 'prompts'
 
+    def ensure_prompt_dir(self) -> Path:
+        """Ensure ~/.kelvin.d/prompts exists and copy package prompts if needed."""
+        prompt_dir = self.prompts_dir()
+        if prompt_dir.exists():
+            return prompt_dir
+        ensure_dir(prompt_dir)
+        
+        # Find package prompts directory (look relative to this script)
+        # __file__ is in storage/home.py, so go up 3 levels to project root
+        project_root = Path(__file__).parents[3]
+        package_prompts = project_root / 'prompts'
+        
+        if package_prompts.exists() and package_prompts.is_dir():
+            # Copy prompts if user dir is empty
+            user_has_prompts = any(prompt_dir.glob('*'))
+            if not user_has_prompts:
+                import shutil
+                for subdir in ['system', 'templates', 'workflows']:
+                    src = package_prompts / subdir
+                    dst = prompt_dir / subdir
+                    if src.exists():
+                        shutil.copytree(src, dst, dirs_exist_ok=True)
+        
+        return prompt_dir
+
     def state_file(self) -> Path:
         return self.root / 'chat_state.json'
 

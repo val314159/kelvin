@@ -28,7 +28,7 @@ class Chat:
             self.auto_inject_makefile,
         )
         self.convo_store = ConvoStore(self.kelvin_home.convos_dir())
-        self.prompt_store = PromptStore(self.kelvin_home.prompts_dir())
+        self.prompt_store = PromptStore(self.kelvin_home.ensure_prompt_dir())
         self.oai = OAI(self.endpoints)
         
         self.setup_openai()
@@ -317,7 +317,7 @@ class Chat:
             'endpoint': self.endpoint,
             'context': self.context,
             'convos_dir': self.kelvin_home.convos_dir(),
-            'prompts_dir': self.kelvin_home.prompts_dir(),
+            'prompts_dir': self.kelvin_home.ensure_prompt_dir(),
             'auto_inject_makefile': self.auto_inject_makefile,
             'history_file': self.kelvin_home.history_file(),
             'convo': self.convo,
