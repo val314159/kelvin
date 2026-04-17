@@ -1,6 +1,6 @@
+from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, Dict, Optional
-from pathlib import Path
 
 import yaml as pyyaml
 from kelvin.storage.files import ensure_dir, load_json_file, save_json_file
@@ -27,14 +27,10 @@ class KelvinHome:
         if prompt_dir.exists():
             return prompt_dir
         ensure_dir(prompt_dir)
-        
-        # Find package prompts directory (look relative to this script)
-        # __file__ is in storage/home.py, so go up 3 levels to project root
-        project_root = Path(__file__).parents[3]
-        package_prompts = project_root / 'prompts'
-        
+
+        package_prompts = Path(__file__).parents[1] / 'prompts'
+
         if package_prompts.exists() and package_prompts.is_dir():
-            # Copy prompts if user dir is empty
             user_has_prompts = any(prompt_dir.glob('*'))
             if not user_has_prompts:
                 import shutil
