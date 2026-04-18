@@ -119,16 +119,12 @@ class OAI:
     def execute_tool_call(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         function_name = tool_call['function']['name']
         arguments = json.loads(tool_call['function']['arguments'])
-        print(f"DEBUG: Executing tool: {function_name} with args: {str(arguments)[:40]}")
         if function_name not in TOOL_INDEX:
-            print(f"DEBUG: Tool not found in index: {function_name}")
             return {"error": f"Unknown tool: {function_name}", "success": False}
         try:
             result = TOOL_INDEX[function_name](**arguments)
-            print(f"DEBUG: Tool execution result: {repr(result)[:40]}...")
             return {"result": result, "success": True}
         except Exception as exc:
-            print(f"DEBUG: Tool execution error: {exc}")
             return {"error": str(exc), "success": False}
 
     def process_turn(self, messages: List[Dict[str, Any]], persist: Callable[[Any, str], None]):
@@ -136,7 +132,6 @@ class OAI:
         iteration = 0
         while iteration < self.max_tool_iterations:
             iteration += 1
-            print(f"DEBUG: Tool call iteration {iteration}")
             
             # Get response as iterator
             content_iter = self.chat(messages)
@@ -168,10 +163,8 @@ class OAI:
                     yield full_content
                     
                 if not tool_calls:
-                    print("DEBUG: AI did not make any tool calls")
                     break
                     
-                print(f"DEBUG: AI made {len(tool_calls)} tool calls")
                 # Handle tool calls (existing logic)
                 assistant_msg = response
                 persist([assistant_msg], 'asst')
@@ -193,7 +186,6 @@ class OAI:
                 # Just yield all chunks
                 for chunk in chunks:
                     yield chunk
-                print("DEBUG: Streaming mode, no tool calls")
                 break
         else:
             yield "Error: Too many tool call iterations"
@@ -207,12 +199,10 @@ class OAI:
         iteration = 0
         while iteration < self.max_tool_iterations:
             iteration += 1
-            print(f"DEBUG: Tool call iteration {iteration}")
             tool_calls = self.get_tool_calls(response)
             if not tool_calls:
                 ai_response = response.get('content') or ''
                 break
-            print(f"DEBUG: Processing {len(tool_calls)} tool calls")
             assistant_tool_call_msg = self.message_to_dict(response)
             persist([assistant_tool_call_msg], 'asst')
             tool_results = []
@@ -226,24 +216,18 @@ class OAI:
                     'timestamp': __import__('datetime').datetime.now().isoformat() + 'Z',
                 })
             persist(tool_results, 'tool')
-            print(f"DEBUG: Tool results to send to AI: {len(tool_results)}")
             messages.append(assistant_tool_call_msg)
             messages.extend(tool_results)
             try:
-                print("DEBUG: Sending tool results to AI for next response")
                 response = self.chat(messages)
                 next_tool_calls = self.get_tool_calls(response)
                 if next_tool_calls:
-                    print("DEBUG: AI wants to make more tool calls:", len(next_tool_calls))
                     continue
-                print("DEBUG: AI is done with tool calls, providing final response")
                 ai_response = response.get('content') or ''
                 break
             except Exception as exc:
-                print(f"DEBUG: Error getting AI response: {exc}")
                 ai_response = f"Error after tool execution: {str(exc)}"
                 break
         else:
             ai_response = "Error: Too many tool call iterations, possible infinite loop"
-        print(f"DEBUG: Final AI response after {iteration} iterations: {ai_response[:200]}...")
         return ai_response
