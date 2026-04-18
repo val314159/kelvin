@@ -1,2 +1,3 @@
-def hello() -> str:
-    return "Hello from kelvin!"
+
+__version__ = '0.2.0'
+
