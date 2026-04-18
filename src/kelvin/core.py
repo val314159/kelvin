@@ -29,7 +29,24 @@ class Chat:
         )
         self.convo_store = ConvoStore(self.kelvin_home.convos_dir())
         self.prompt_store = PromptStore(self.kelvin_home.ensure_prompt_dir())
-        self.oai = OAI(self.endpoints, self.config['max_tool_iterations'])
+
+        # Get max_tool_iterations with validation
+        raw_value = self.config.get('max_tool_iterations', 15)
+        try:
+            max_tool_iterations = int(str(raw_value), 10)
+        except (ValueError, TypeError):
+            print(f"Warning: Invalid max_tool_iterations ({raw_value}), using default 15")
+            max_tool_iterations = 15
+
+        # Enforce reasonable bounds
+        if max_tool_iterations < 1:
+            print(f"Warning: max_tool_iterations ({max_tool_iterations}) too low, using 15")
+            max_tool_iterations = 15
+        elif max_tool_iterations > 100:
+            print(f"Warning: max_tool_iterations ({max_tool_iterations}) too high, clamping to 100")
+            max_tool_iterations = 100
+
+        self.oai = OAI(self.endpoints, max_tool_iterations)
         
         self.setup_openai()
         self.load_user_state()

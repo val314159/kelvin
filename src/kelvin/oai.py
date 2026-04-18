@@ -63,7 +63,7 @@ TOOL_SIGNATURES = [shell_tool.tool_signature]
 
 class OAI:
     def __init__(self, endpoints: Dict[str, Dict[str, Any]],
-                 max_tool_iterations: int = 10):
+                 max_tool_iterations: int = 15):
         self.endpoints = endpoints
         self.model = ''
         self.stream = True
