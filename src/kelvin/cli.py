@@ -47,11 +47,49 @@ def run_shell_command(cmd: str) -> None:
 
 def page_response(response_iter) -> None:
     """Page response, handling both streaming and non-streaming iterators."""
+    def display_chunks():
+        current_round = None
+        saw_text_this_round = False
+
+        for event in response_iter:
+            if isinstance(event, str):
+                yield event
+                continue
+
+            round_num = event.get('round')
+            if round_num != current_round:
+                current_round = round_num
+                saw_text_this_round = False
+
+            role = event.get('role')
+            content = event.get('content', '')
+            done = bool(event.get('done'))
+
+            if role == 'error':
+                yield f"Error: {content}"
+                continue
+
+            if role == 'tool':
+                continue
+
+            if role != 'assistant':
+                continue
+
+            if done:
+                if not saw_text_this_round and content:
+                    yield content
+                saw_text_this_round = False
+                continue
+
+            if content:
+                saw_text_this_round = True
+                yield content
+
     pager = os.environ.get('PAGER', 'less -RX')
     pager_cmd = shlex.split(pager) if pager else []
     if not pager_cmd:
         # No pager: just print chunks
-        for chunk in response_iter:
+        for chunk in display_chunks():
             print(chunk, end='', flush=True)
         print()
         return
@@ -64,14 +102,14 @@ def page_response(response_iter) -> None:
             text=True,
         )
         # Feed chunks to pager
-        for chunk in response_iter:
+        for chunk in display_chunks():
             pager_proc.stdin.write(chunk)
             pager_proc.stdin.flush()
         pager_proc.stdin.close()
         pager_proc.wait()
     except OSError:
         # Fall back to direct printing
-        for chunk in response_iter:
+        for chunk in display_chunks():
             print(chunk, end='', flush=True)
         print()
 

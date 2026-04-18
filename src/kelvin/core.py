@@ -155,11 +155,14 @@ class Chat:
         context_parts.append("")
         return "\n".join(context_parts)
 
+    def write_convo_file(self, msg, role):
+        return self.convo_store.write_convo_file(self.convo, msg, role)
+        
     def write_meta_update(self):
         if not self.convo:
             return
         meta = self.build_meta_state(convo_id=self.convo)
-        self.convo_store.write_convo_file(self.convo, meta, 'meta')
+        self.write_convo_file(meta, 'meta')
 
     def create_convo(self, name: str = None) -> str:
         """Create a new conversation."""
@@ -245,7 +248,7 @@ class Chat:
             'content': message,
             'timestamp': datetime.datetime.now().isoformat() + 'Z'
         }]
-        self.convo_store.write_convo_file(self.convo, user_msg, 'user')
+        self.write_convo_file(user_msg, 'user')
         # Build full context
         full_context = self.build_context()
         # Add conversation history
@@ -262,33 +265,40 @@ class Chat:
                 if msg['role'] == 'tool':
                     rec['name'] = msg['name']
                     rec['tool_call_id'] = msg['tool_call_id']
-                messages.append(rec)
-        # Add current message
-        messages.append({'role': 'user', 'content': message})
+                messages.append(rec)        
+        try:
+            for event in self.oai.process_turn(messages):
+                if event['role'] == 'tool':
+                    tool_msg = [{
+                        'role': 'tool',
+                        'tool_call_id': event['tool_call_id'],
+                        'name': event['name'],
+                        'content': event['content'],
+                        'timestamp': event['timestamp'],
+                    }]
+                    self.write_convo_file(tool_msg, 'tool')
+                elif event['done'] and event['role'] == 'assistant':
+                    asst_msg = [{
+                        'role': 'assistant',
+                        'content': event['content'],
+                        'timestamp': datetime.datetime.now().isoformat() + 'Z'
+                    }]
+                    if event['tool_calls']:
+                        asst_msg[0]['tool_calls'] = event['tool_calls']
+                        pass
+                    self.write_convo_file(asst_msg, 'asst')
+                    pass
+                yield event
+        except Exception as exc:
+            yield {
+                'round': 1,
+                'seq': 1,
+                'role': 'error',
+                'content': str(exc),
+                'tool_calls': [],
+                'done': True,
+            }
         
-        def response_generator():
-            """Generator that yields response chunks and saves on completion."""
-            try:
-                generator = self.oai.process_turn(
-                    messages,
-                    partial(self.convo_store.write_convo_file, self.convo),
-                )
-                full_response = []
-                for chunk in generator:
-                    full_response.append(chunk)
-                    yield chunk
-                # Write complete response after generator finishes
-                ai_response = ''.join(full_response)
-                asst_msg = [{
-                    'role': 'assistant',
-                    'content': ai_response,
-                    'timestamp': datetime.datetime.now().isoformat() + 'Z'
-                }]
-                self.convo_store.write_convo_file(self.convo, asst_msg, 'asst')
-            except Exception as exc:
-                yield f"Error: {str(exc)}"
-        
-        return response_generator()
     
     def switch_context(self, path):
         """Perform context switching."""
@@ -308,7 +318,7 @@ class Chat:
                     'to_context': new_context_rel,
                     'to_convo': new_convo,
                 }
-                self.convo_store.write_convo_file(old_convo, leave_meta, 'meta')
+                self.write_convo_file(leave_meta, 'meta')
             print(f"Switched to context: {new_context}")
         else:
             print(f"Context '{path}' not found")
