@@ -62,11 +62,13 @@ TOOL_SIGNATURES = [shell_tool.tool_signature]
 
 
 class OAI:
-    def __init__(self, endpoints: Dict[str, Dict[str, Any]]):
+    def __init__(self, endpoints: Dict[str, Dict[str, Any]],
+                 max_tool_iterations: int = 10):
         self.endpoints = endpoints
         self.model = ''
         self.stream = True
         self.client: openai.OpenAI | None = None
+        self.max_tool_iterations = max_tool_iterations
 
     def use_endpoint(self, endpoint: str, model: str, stream: bool) -> None:
         self.model = model
@@ -178,9 +180,8 @@ class OAI:
         messages: List[Dict[str, Any]],
         persist: Callable[[Any, str], None],
     ) -> str:
-        max_iterations = 10
         iteration = 0
-        while iteration < max_iterations:
+        while iteration < self.max_tool_iterations:
             iteration += 1
             print(f"DEBUG: Tool call iteration {iteration}")
             tool_calls = self.get_tool_calls(response)

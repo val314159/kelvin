@@ -76,6 +76,7 @@ class KelvinHome:
             'stream': True,
             'auto_inject_makefile': True,
             'restore_last_convo': True,
+            'max_tool_iterations': 15,
         }
         user_config_path = self.config_file()
         if user_config_path.exists():

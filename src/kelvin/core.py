@@ -15,21 +15,21 @@ class Chat:
         self.context = Path.cwd()
         self.kelvin_home = KelvinHome()
         self.config = self.kelvin_home.load_config(config_path)
-        
+
         self.model = self.config['default_model']
         self.endpoint = self.config['default_endpoint']
         self.endpoints = self.config['endpoints']
         self.stream = bool(self.config.get('stream', True))
         self.restore_last_convo = bool(self.config.get('restore_last_convo', True))
         self.auto_inject_makefile = bool(self.config.get('auto_inject_makefile', True))
-        
+
         self.context_store = ContextStore(
             self.context,
             self.auto_inject_makefile,
         )
         self.convo_store = ConvoStore(self.kelvin_home.convos_dir())
         self.prompt_store = PromptStore(self.kelvin_home.ensure_prompt_dir())
-        self.oai = OAI(self.endpoints)
+        self.oai = OAI(self.endpoints, self.config['max_tool_iterations'])
         
         self.setup_openai()
         self.load_user_state()
