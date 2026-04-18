@@ -45,18 +45,35 @@ def run_shell_command(cmd: str) -> None:
         print(f"Shell error: {exc}")
 
 
-def page_response(response: str) -> None:
-    response_path = Path('.response')
-    response_path.write_text(response + '\n')
+def page_response(response_iter) -> None:
+    """Page response, handling both streaming and non-streaming iterators."""
     pager = os.environ.get('PAGER', 'less -RX')
     pager_cmd = shlex.split(pager) if pager else []
     if not pager_cmd:
-        print(f"\n{response}")
+        # No pager: just print chunks
+        for chunk in response_iter:
+            print(chunk, end='', flush=True)
+        print()
         return
+    
+    # Start pager process
     try:
-        subprocess.run([*pager_cmd, str(response_path)])
+        pager_proc = subprocess.Popen(
+            pager_cmd,
+            stdin=subprocess.PIPE,
+            text=True,
+        )
+        # Feed chunks to pager
+        for chunk in response_iter:
+            pager_proc.stdin.write(chunk)
+            pager_proc.stdin.flush()
+        pager_proc.stdin.close()
+        pager_proc.wait()
     except OSError:
-        print(f"\n{response}")
+        # Fall back to direct printing
+        for chunk in response_iter:
+            print(chunk, end='', flush=True)
+        print()
 
 
 class ChatCompleter(Completer):
@@ -139,9 +156,8 @@ def run_repl(core: Chat) -> None:
                 continue
             if dispatcher.dispatch(line):
                 continue
-            response = core.send_message(line)
-            if not core.stream:
-                page_response(response)
+            response_iter = core.send_message(line)
+            page_response(response_iter)
         except KeyboardInterrupt:
             print("\nUse /quit to exit")
         except EOFError:

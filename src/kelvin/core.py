@@ -236,8 +236,8 @@ class Chat:
         self.write_meta_update()
         return stored_path
 
-    def send_message(self, message: str) -> str:
-        """Send a message to the AI and get response."""
+    def send_message(self, message: str):
+        """Send a message to the AI and return a generator for the response."""
         if not self.convo:
             self.create_convo()
         user_msg = [{
@@ -265,22 +265,30 @@ class Chat:
                 messages.append(rec)
         # Add current message
         messages.append({'role': 'user', 'content': message})
-        # Get AI response with tool calling
-        try:
-            ai_response = self.oai.process_turn(
-                messages,
-                partial(self.convo_store.write_convo_file, self.convo),
-            )
-        except Exception as exc:
-            ai_response = f"Error: {str(exc)}"
-        # Write AI response
-        asst_msg = [{
-            'role': 'assistant',
-            'content': ai_response,
-            'timestamp': datetime.datetime.now().isoformat() + 'Z'
-        }]
-        self.convo_store.write_convo_file(self.convo, asst_msg, 'asst')
-        return ai_response
+        
+        def response_generator():
+            """Generator that yields response chunks and saves on completion."""
+            try:
+                generator = self.oai.process_turn(
+                    messages,
+                    partial(self.convo_store.write_convo_file, self.convo),
+                )
+                full_response = []
+                for chunk in generator:
+                    full_response.append(chunk)
+                    yield chunk
+                # Write complete response after generator finishes
+                ai_response = ''.join(full_response)
+                asst_msg = [{
+                    'role': 'assistant',
+                    'content': ai_response,
+                    'timestamp': datetime.datetime.now().isoformat() + 'Z'
+                }]
+                self.convo_store.write_convo_file(self.convo, asst_msg, 'asst')
+            except Exception as exc:
+                yield f"Error: {str(exc)}"
+        
+        return response_generator()
     
     def switch_context(self, path):
         """Perform context switching."""

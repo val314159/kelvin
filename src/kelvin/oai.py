@@ -82,7 +82,8 @@ class OAI:
             api_key = env_value
         self.client = openai.OpenAI(api_key=api_key, base_url=endpoint_config['url'])
 
-    def chat(self, messages: List[Dict[str, Any]], use_tools: bool = True) -> Dict[str, Any]:
+    def chat(self, messages: List[Dict[str, Any]], use_tools: bool = True) -> Any:
+        """Returns an iterator over content chunks."""
         tools = TOOL_SIGNATURES if use_tools else None
         response = self.client.chat.completions.create(
             model=self.model,
@@ -94,53 +95,20 @@ class OAI:
             extra_body={"options": {"num_ctx": 256 * 1024}},
         )
         if not self.stream:
-            return response.choices[0].message.model_dump(exclude_none=True)
+            # Non-streaming: return iterator over single result
+            content = response.choices[0].message.model_dump(exclude_none=True).get('content', '') or ''
+            return iter([content])
+        # Streaming: return generator over chunks
         return self.stream_chat(response)
 
-    def stream_chat(self, stream: Any) -> Dict[str, Any]:
-        message: Dict[str, Any] = {
-            'role': 'assistant',
-            'content': '',
-            'tool_calls': [],
-        }
-        printed_content = False
-
+    def stream_chat(self, stream: Any):
+        """Generator that yields content chunks from streaming response."""
         for chunk in stream:
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
             if delta.content:
-                print(delta.content, end='', flush=True)
-                message['content'] += delta.content
-                printed_content = True
-            if delta.tool_calls:
-                for tool_call_delta in delta.tool_calls:
-                    idx = tool_call_delta.index or 0
-                    while len(message['tool_calls']) <= idx:
-                        message['tool_calls'].append({
-                            'id': '',
-                            'type': 'function',
-                            'function': {'name': '', 'arguments': ''},
-                        })
-                    tool_call = message['tool_calls'][idx]
-                    if tool_call_delta.id:
-                        tool_call['id'] = tool_call_delta.id
-                    if tool_call_delta.type:
-                        tool_call['type'] = tool_call_delta.type
-                    fn_delta = tool_call_delta.function
-                    if fn_delta:
-                        if fn_delta.name:
-                            tool_call['function']['name'] += fn_delta.name
-                        if fn_delta.arguments:
-                            tool_call['function']['arguments'] += fn_delta.arguments
-
-        if printed_content:
-            print()
-        if not message['content']:
-            message['content'] = None
-        if not message['tool_calls']:
-            message.pop('tool_calls')
-        return message
+                yield delta.content
 
     def get_tool_calls(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
         return message.get('tool_calls') or []
@@ -163,16 +131,72 @@ class OAI:
             print(f"DEBUG: Tool execution error: {exc}")
             return {"error": str(exc), "success": False}
 
-    def process_turn(self, messages: List[Dict[str, Any]], persist: Callable[[Any, str], None]) -> str:
-        response = self.chat(messages)
-        tool_calls = self.get_tool_calls(response)
-        if not tool_calls:
-            print("DEBUG: AI did not make any tool calls")
-            return response.get('content') or ''
-        print(f"DEBUG: AI made {len(tool_calls)} tool calls:")
-        for i, tool_call in enumerate(tool_calls):
-            print(f"DEBUG: Tool call {i}: {tool_call['function']['name']} with args: {tool_call['function']['arguments']}")
-        return self.process_tool_calls(response, messages, persist)
+    def process_turn(self, messages: List[Dict[str, Any]], persist: Callable[[Any, str], None]):
+        """Generator that yields content chunks, handling tool calls internally."""
+        iteration = 0
+        while iteration < self.max_tool_iterations:
+            iteration += 1
+            print(f"DEBUG: Tool call iteration {iteration}")
+            
+            # Get response as iterator
+            content_iter = self.chat(messages)
+            
+            # Collect content and check for tool calls
+            chunks = []
+            response = None
+            for chunk in content_iter:
+                chunks.append(chunk)
+            
+            # For non-streaming, we need to get the full response for tool calls
+            if not self.stream:
+                # Re-call to get the response dict with tool_calls
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=TOOL_SIGNATURES,
+                    tool_choice="auto",
+                    stream=False,
+                    temperature=0.7,
+                    extra_body={"options": {"num_ctx": 256 * 1024}},
+                )
+                response = response.choices[0].message.model_dump(exclude_none=True)
+                tool_calls = self.get_tool_calls(response)
+                
+                # Yield the content
+                full_content = response.get('content') or ''
+                if full_content:
+                    yield full_content
+                    
+                if not tool_calls:
+                    print("DEBUG: AI did not make any tool calls")
+                    break
+                    
+                print(f"DEBUG: AI made {len(tool_calls)} tool calls")
+                # Handle tool calls (existing logic)
+                assistant_msg = response
+                persist([assistant_msg], 'asst')
+                tool_results = []
+                for tool_call in tool_calls:
+                    result = self.execute_tool_call(tool_call)
+                    tool_results.append({
+                        'role': 'tool',
+                        'tool_call_id': tool_call['id'],
+                        'name': tool_call['function']['name'],
+                        'content': json.dumps(result),
+                        'timestamp': __import__('datetime').datetime.now().isoformat() + 'Z',
+                    })
+                persist(tool_results, 'tool')
+                messages.append(assistant_msg)
+                messages.extend(tool_results)
+            else:
+                # Streaming mode - no tool call support for now
+                # Just yield all chunks
+                for chunk in chunks:
+                    yield chunk
+                print("DEBUG: Streaming mode, no tool calls")
+                break
+        else:
+            yield "Error: Too many tool call iterations"
 
     def process_tool_calls(
         self,
