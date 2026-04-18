@@ -48,7 +48,7 @@ def run_shell_command(cmd: str) -> None:
 def page_response(response: str) -> None:
     response_path = Path('.response')
     response_path.write_text(response + '\n')
-    pager = os.environ.get('PAGER', 'less')
+    pager = os.environ.get('PAGER', 'less -RX')
     pager_cmd = shlex.split(pager) if pager else []
     if not pager_cmd:
         print(f"\n{response}")
