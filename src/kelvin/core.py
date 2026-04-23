@@ -32,19 +32,7 @@ class Chat:
 
         # Get max_tool_iterations with validation
         raw_value = self.config.get('max_tool_iterations', 15)
-        try:
-            max_tool_iterations = int(str(raw_value), 10)
-        except (ValueError, TypeError):
-            print(f"Warning: Invalid max_tool_iterations ({raw_value}), using default 15")
-            max_tool_iterations = 15
-
-        # Enforce reasonable bounds
-        if max_tool_iterations < 1:
-            print(f"Warning: max_tool_iterations ({max_tool_iterations}) too low, using 15")
-            max_tool_iterations = 15
-        elif max_tool_iterations > 100:
-            print(f"Warning: max_tool_iterations ({max_tool_iterations}) too high, clamping to 100")
-            max_tool_iterations = 100
+        max_tool_iterations = int(str(raw_value), 10)
 
         self.oai = OAI(self.endpoints, max_tool_iterations)
         
@@ -300,15 +288,13 @@ class Chat:
             }
         
     
-    def switch_context(self, path):
-        """Perform context switching."""
-        # Switch to specific context
-        old_convo = self.convo
+    def switch_context(self, path) -> Optional[str]:
+        """Perform context switching. Returns the new context path or None if not found."""
         new_context = (Path.cwd() / path).resolve()
-        print(f"Switching to {new_context}...")
         if new_context.exists() and new_context.is_dir():
+            old_convo = self.convo
             self.set_context(new_context)
-            self.load_context_state()  # Load context after changing directory
+            self.load_context_state()
             new_convo = self.convo
             new_context_rel = str(self.context)
             if old_convo:
@@ -319,9 +305,9 @@ class Chat:
                     'to_convo': new_convo,
                 }
                 self.write_convo_file(leave_meta, 'meta')
-            print(f"Switched to context: {new_context}")
+            return str(new_context)
         else:
-            print(f"Context '{path}' not found")
+            return None
 
     def set_endpoint(self, endpoint: str) -> None:
         if endpoint not in self.endpoints:

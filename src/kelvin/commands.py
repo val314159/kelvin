@@ -84,7 +84,11 @@ class CommandDispatcher:
                 marker = " (current)" if is_current else ""
                 print(f"  {name}{marker}")
         else:
-            self.core.switch_context(args[0])
+            result = self.core.switch_context(args[0])
+            if result:
+                print(f"Switched to context: {result}")
+            else:
+                print(f"Context '{args[0]}' not found")
 
     def handle_prompts(self):
         print("Available prompts:")
