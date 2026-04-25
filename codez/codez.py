@@ -2,22 +2,21 @@
 """Codex Web: one-file mobile-first Codex CLI wrapper.
 
 Usage:
-  codez.py [--host=<host>] [--port=<port>] [--root=<dir>] [--user=<user>] [--password=<password>] [--secret=<secret>]
+  codez.py [--host=<host>] [--port=<port>] [--root=<dir>] [--base-path=<path>] [--user=<user>] [--password=<password>] [--secret=<secret>]
   codez.py -h | --help
 
 Options:
   --host=<host>          Bind host [default: 127.0.0.1]
   --port=<port>          Bind port [default: 8080]
   --root=<dir>           Workspace root [default: .]
+  --base-path=<path>     Public URL mount path, such as /z [default: /]
   --user=<user>          Login user [default: val]
   --password=<password>  Login password [default: change-me]
   --secret=<secret>      Cookie signing secret [default: change-this-cookie-secret]
   -h --help              Show help.
 """
 import sys; sys.dont_write_bytecode = True
-from gevent import monkey as _;_.patch_all()
 import gevent.monkey as _;_.patch_all()
-#from gevent import monkey as _;_.patch_all()
 import html
 import json
 import os
@@ -30,16 +29,18 @@ import time
 from dataclasses import dataclass
 
 import gevent
+import gevent.subprocess as gsubprocess
 from gevent.lock import Semaphore
 from gevent.pywsgi import WSGIServer
 from geventwebsocket.exceptions import WebSocketError
 from geventwebsocket.handler import WebSocketHandler
 
-from bottle import Bottle, redirect, request, response
+from bottle import Bottle, HTTPResponse, request, response
 from docopt import docopt
 
 
 ROOT = None
+BASE_PATH = ""
 USER = None
 PASSWORD = None
 SECRET = None
@@ -158,7 +159,7 @@ LOGIN_HTML = """<!doctype html>
     <h1>Codex Web</h1>
     <p>Sign in to use this local Codex control panel.</p>
     __ERROR__
-    <form method="post" action="/login">
+    <form method="post" action="__LOGIN_ACTION__">
       <label for="user">User</label>
       <input id="user" name="user" autocomplete="username" value="__USER__">
       <label for="password">Password</label>
@@ -507,7 +508,7 @@ APP_HTML = """<!doctype html>
           <span class="status-dot" id="statusDot"></span>
           <span id="statusText">connecting</span>
         </span>
-        <a href="/logout">logout</a>
+        <a href="__LOGOUT_URL__">logout</a>
       </div>
     </header>
 
@@ -546,6 +547,7 @@ APP_HTML = """<!doctype html>
   <script>
     const repoName = __REPO_JSON__;
     const rootPath = __ROOT_JSON__;
+    const basePath = __BASE_PATH_JSON__;
     const transcript = document.getElementById("transcript");
     const emptyState = document.getElementById("emptyState");
     const promptBox = document.getElementById("prompt");
@@ -576,7 +578,7 @@ APP_HTML = """<!doctype html>
 
     function socketUrl() {
       const scheme = location.protocol === "https:" ? "wss" : "ws";
-      return scheme + "://" + location.host + "/ws";
+      return scheme + "://" + location.host + basePath + "/ws";
     }
 
     function connect() {
@@ -887,6 +889,35 @@ APP_HTML = """<!doctype html>
 </html>"""
 
 
+def normalize_base_path(path):
+    path = (path or "/").strip()
+    if not path or path == "/":
+        return ""
+    if "?" in path or "#" in path:
+        raise SystemExit("error: --base-path must be a path, not a URL")
+    if not path.startswith("/"):
+        path = "/" + path
+    return path.rstrip("/")
+
+
+def public_path(path):
+    if not path.startswith("/"):
+        path = "/" + path
+    if not BASE_PATH:
+        return path
+    if path == "/":
+        return BASE_PATH + "/"
+    return BASE_PATH + path
+
+
+def redirect_to(path):
+    res = response.copy(cls=HTTPResponse)
+    res.status = 303
+    res.body = ""
+    res.set_header("Location", public_path(path))
+    return res
+
+
 def login_page(error=None):
     error_html = ""
     if error:
@@ -894,6 +925,7 @@ def login_page(error=None):
     return (
         LOGIN_HTML.replace("__ERROR__", error_html)
         .replace("__USER__", html.escape(USER or ""))
+        .replace("__LOGIN_ACTION__", html.escape(public_path("/login"), quote=True))
     )
 
 
@@ -902,6 +934,8 @@ def app_page():
     return (
         APP_HTML.replace("__REPO_JSON__", json.dumps(repo))
         .replace("__ROOT_JSON__", json.dumps(ROOT))
+        .replace("__BASE_PATH_JSON__", json.dumps(BASE_PATH))
+        .replace("__LOGOUT_URL__", html.escape(public_path("/logout"), quote=True))
     )
 
 
@@ -1317,35 +1351,37 @@ def stop_active(ws):
     gevent.spawn(job.stop)
 
 
+def run_git_async(cmd, timeout):
+    """Run a git command asynchronously without blocking the event loop."""
+    proc = gsubprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=ROOT,
+    )
+    try:
+        with gevent.Timeout(timeout, False):
+            stdout, stderr = proc.communicate()
+    except gevent.Timeout:
+        proc.kill()
+        proc.communicate()
+        raise RuntimeError(f"git command timed out after {timeout}s")
+    
+    if proc.returncode != 0:
+        raise RuntimeError(stderr.strip() or "git command failed")
+    
+    return stdout.rstrip()
+
 def run_diff(ws):
     try:
-        status = subprocess.run(
-            ["git", "-C", ROOT, "status", "--short"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-        if status.returncode != 0:
-            raise RuntimeError(status.stderr.strip() or "git status failed")
-        diff = subprocess.run(
-            ["git", "-C", ROOT, "diff", "--", "."],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        if diff.returncode != 0:
-            raise RuntimeError(diff.stderr.strip() or "git diff failed")
-    except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
+        status_text = run_git_async(["git", "-C", ROOT, "status", "--short"], 15)
+        diff_text = run_git_async(["git", "-C", ROOT, "diff", "--", "."], 30)
+    except (OSError, RuntimeError) as exc:
         emit(ws, {"type": "error", "text": "git diff failed: {}".format(exc)}, keep=True)
         log_event("error", text="git diff failed: {}".format(exc))
         return
 
-    status_text = status.stdout.rstrip()
-    diff_text = diff.stdout.rstrip()
     if status_text or diff_text:
         parts = []
         if status_text:
@@ -1465,7 +1501,7 @@ def handle_ws_message(ws, raw):
 @APP.get("/login")
 def login_get():
     if authenticated():
-        redirect("/")
+        return redirect_to("/")
     return login_page()
 
 
@@ -1478,25 +1514,25 @@ def login_post():
             COOKIE_NAME,
             user,
             secret=SECRET,
-            path="/",
+            path=public_path("/"),
             httponly=True,
             samesite="Lax",
         )
-        redirect("/")
+        return redirect_to("/")
     response.status = 401
     return login_page("Invalid user or password.")
 
 
 @APP.get("/logout")
 def logout():
-    response.delete_cookie(COOKIE_NAME, path="/")
-    redirect("/login")
+    response.delete_cookie(COOKIE_NAME, path=public_path("/"))
+    return redirect_to("/login")
 
 
 @APP.get("/")
 def index():
     if not authenticated():
-        redirect("/login")
+        return redirect_to("/login")
     return app_page()
 
 
@@ -1542,9 +1578,10 @@ def parse_port(value):
 
 
 def configure(args):
-    global ROOT, USER, PASSWORD, SECRET, LOG_DIR, LOG_PATH
+    global ROOT, BASE_PATH, USER, PASSWORD, SECRET, LOG_DIR, LOG_PATH
 
     ROOT = os.path.realpath(os.path.abspath(args["--root"]))
+    BASE_PATH = normalize_base_path(args["--base-path"])
     USER = args["--user"]
     PASSWORD = args["--password"]
     SECRET = args["--secret"]
@@ -1553,8 +1590,7 @@ def configure(args):
 
     git_dir = os.path.join(ROOT, ".git")
     if not os.path.isdir(git_dir):
-        print("error: workspace root must contain a .git directory: {}".format(ROOT), file=sys.stderr)
-        raise SystemExit(2)
+        print("warning: workspace root should contain a .git directory: {}".format(ROOT), file=sys.stderr)
 
 
 def main(argv=None):
@@ -1565,7 +1601,7 @@ def main(argv=None):
     os.makedirs(LOG_DIR, exist_ok=True)
     with open(LOG_PATH, "a", encoding="utf-8"):
         pass
-    print("Codex Web serving {} on http://{}:{}/".format(ROOT, host, port))
+    print("Codex Web serving {} on http://{}:{}{}".format(ROOT, host, port, public_path("/")))
     server = WSGIServer((host, port), APP, handler_class=WebSocketHandler)
     try:
         server.serve_forever()
