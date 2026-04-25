@@ -659,12 +659,12 @@ APP_HTML = """<!doctype html>
         return;
       }
 
-      const lineStep = 22;
+      const lineStep = 44;
       transcript.scrollTo({
         top: Math.min(maxTop, transcript.scrollTop + lineStep),
         behavior: "smooth"
       });
-      scrollTimer = window.setTimeout(stepReaderScroll, 300);
+      scrollTimer = window.setTimeout(stepReaderScroll, 600);
     }
 
     function afterAppend(wasNearBottom) {
