@@ -275,7 +275,6 @@ APP_HTML = """<!doctype html>
       flex: 1;
       overflow-y: auto;
       padding: .85rem;
-      scroll-behavior: smooth;
     }
     .empty {
       color: var(--muted);
@@ -572,6 +571,8 @@ APP_HTML = """<!doctype html>
     let files = [];
     let currentFile = null;
     let markdownPretty = true;
+    let autoScroll = true;
+    let scrollTimer = null;
 
     document.getElementById("repoName").textContent = "repo: " + repoName;
     document.getElementById("repoName").title = rootPath;
@@ -641,14 +642,46 @@ APP_HTML = """<!doctype html>
       return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
     }
 
+    function scrollToBottom() {
+      autoScroll = true;
+      if (scrollTimer !== null) return;
+      scrollTimer = window.setTimeout(stepReaderScroll, 250);
+    }
+
+    function stepReaderScroll() {
+      scrollTimer = null;
+      if (!autoScroll) return;
+
+      const maxTop = transcript.scrollHeight - transcript.clientHeight;
+      const remaining = maxTop - transcript.scrollTop;
+      if (remaining <= 1) {
+        transcript.scrollTop = maxTop;
+        return;
+      }
+
+      const lineStep = 22;
+      transcript.scrollTo({
+        top: Math.min(maxTop, transcript.scrollTop + lineStep),
+        behavior: "smooth"
+      });
+      scrollTimer = window.setTimeout(stepReaderScroll, 300);
+    }
+
     function afterAppend(wasNearBottom) {
       if (emptyState) {
         emptyState.hidden = transcript.querySelectorAll(".block").length > 0;
       }
-      if (wasNearBottom) {
-        transcript.scrollTop = transcript.scrollHeight;
-      }
+      if (wasNearBottom || autoScroll) scrollToBottom();
     }
+
+    transcript.addEventListener("scroll", () => {
+      if (nearBottom()) autoScroll = true;
+    });
+    ["wheel", "touchmove"].forEach((eventName) => {
+      transcript.addEventListener(eventName, () => {
+        if (!nearBottom()) autoScroll = false;
+      }, { passive: true });
+    });
 
     function makeBlock(kind, label) {
       const wasNearBottom = nearBottom();
