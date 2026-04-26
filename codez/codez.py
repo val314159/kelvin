@@ -49,6 +49,8 @@ LOG_DIR = None
 LOG_PATH = None
 
 ACTIVE = None
+MAKE_ACTIVE = None
+MAKE_RESULT = None
 FIRST_TURN = True
 CODEX_SESSION_ID = None
 SCROLLBACK = []
@@ -56,8 +58,10 @@ SCROLLBACK = []
 COOKIE_NAME = "codez_user"
 MAX_SCROLLBACK = 300
 MAX_FILE_SIZE = 1024 * 1024
+MAX_MAKE_CAPTURE = 64 * 1024
 
 ACTIVE_LOCK = Semaphore()
+MAKE_LOCK = Semaphore()
 LOG_LOCK = Semaphore()
 SCROLLBACK_LOCK = Semaphore()
 
@@ -390,7 +394,9 @@ APP_HTML = """<!doctype html>
       font-weight: 650;
     }
     button.primary { background: var(--accent); border-color: #6fa1ff; color: white; }
-    button.danger { color: #ffd3d7; border-color: #70404a; }
+    button.warning { background: #6e5318; border-color: #a87b1f; color: #fff0c2; }
+    button.danger { background: #3a1117; color: #ffd3d7; border-color: #8a3440; }
+    button.fail { background: #3a1117; border-color: #8a3440; color: #ffd3d7; }
     button:disabled {
       cursor: not-allowed;
       opacity: .48;
@@ -607,6 +613,7 @@ APP_HTML = """<!doctype html>
     let editorView = null;
     let editorFallback = null;
     let codeMirrorPromise = null;
+    let makeState = "idle";
     let autoScroll = true;
     let scrollTimer = null;
 
@@ -673,10 +680,18 @@ APP_HTML = """<!doctype html>
       sendBtn.classList.toggle("danger", running);
       sendBtn.classList.toggle("primary", !running);
       sendBtn.disabled = !connected;
-      makeBtn.disabled = running || !connected;
+      makeBtn.textContent = makeState === "running" ? "End" : makeState === "fail" ? "Fail" : "Make";
+      makeBtn.classList.toggle("warning", makeState === "running");
+      makeBtn.classList.toggle("fail", makeState === "fail");
+      makeBtn.disabled = !connected;
       diffBtn.disabled = !connected;
       filesBtn.disabled = !connected;
       clearBtn.disabled = false;
+    }
+
+    function setMakeState(state) {
+      makeState = state || "idle";
+      updateButtons();
     }
 
     function nearBottom() {
@@ -819,6 +834,11 @@ APP_HTML = """<!doctype html>
       } else if (msg.type === "error") {
         appendError(msg.text);
         setStatus("error");
+      } else if (msg.type === "make_status") {
+        setMakeState(msg.state);
+      } else if (msg.type === "make_output") {
+        appendTool("Make failed", msg.text || "", "", true);
+        setMakeState("idle");
       } else if (msg.type === "codex_event") {
         // Keep these available to protocol consumers without cluttering the v0 UI.
       }
@@ -838,8 +858,9 @@ APP_HTML = """<!doctype html>
     });
 
     makeBtn.addEventListener("click", () => {
-      if (running) return;
-      sendMessage({ type: "prompt", text: "run make and fix any failures" });
+      if (makeState === "running") sendMessage({ type: "make_stop" });
+      else if (makeState === "fail") sendMessage({ type: "make_show" });
+      else sendMessage({ type: "make_start" });
     });
     statusBtn.addEventListener("click", () => {
       if (!connected) connect();
@@ -1542,6 +1563,167 @@ def stop_active(ws):
     gevent.spawn(job.stop)
 
 
+def trim_capture(text):
+    if len(text) <= MAX_MAKE_CAPTURE:
+        return text
+    return text[-MAX_MAKE_CAPTURE:]
+
+
+@dataclass
+class MakeJob:
+    ws: object
+    proc: subprocess.Popen = None
+    stopped: bool = False
+    output: str = ""
+
+    def run(self):
+        global MAKE_ACTIVE, MAKE_RESULT
+
+        log_path = os.path.join(ROOT, "make.log")
+        started = time.time()
+        emit(self.ws, {"type": "make_status", "state": "running"}, keep=False)
+        log_event("make_started", log_path=log_path)
+
+        try:
+            try:
+                self.proc = gsubprocess.Popen(
+                    ["make"],
+                    cwd=ROOT,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    start_new_session=True,
+                )
+            except FileNotFoundError:
+                self.fail("make not found in PATH", 127, started, log_path)
+                return
+            except OSError as exc:
+                self.fail("failed to start make: {}".format(exc), 1, started, log_path)
+                return
+
+            with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
+                log_file.write("$ make\n")
+                log_file.flush()
+                if self.proc.stdout:
+                    for chunk in self.proc.stdout:
+                        log_file.write(chunk)
+                        log_file.flush()
+                        self.output = trim_capture(self.output + chunk)
+
+            exit_code = self.proc.wait()
+            duration = time.time() - started
+            if self.stopped:
+                MAKE_RESULT = None
+                emit(self.ws, {"type": "make_status", "state": "idle"}, keep=False)
+                log_event("make_stopped", exit=exit_code, duration=duration, log_path=log_path)
+            elif exit_code == 0:
+                MAKE_RESULT = None
+                emit(self.ws, {"type": "make_status", "state": "idle"}, keep=False)
+                log_event("make_done", exit=exit_code, duration=duration, log_path=log_path)
+            else:
+                MAKE_RESULT = self.result(exit_code, duration, log_path)
+                emit(self.ws, {"type": "make_status", "state": "fail"}, keep=False)
+                log_event("make_failed", exit=exit_code, duration=duration, log_path=log_path)
+        finally:
+            with MAKE_LOCK:
+                if MAKE_ACTIVE is self:
+                    MAKE_ACTIVE = None
+
+    def fail(self, text, exit_code, started, log_path):
+        global MAKE_ACTIVE, MAKE_RESULT
+
+        duration = time.time() - started
+        self.output = trim_capture(text + "\n")
+        try:
+            with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
+                log_file.write(self.output)
+        except OSError:
+            pass
+        MAKE_RESULT = self.result(exit_code, duration, log_path)
+        emit(self.ws, {"type": "make_status", "state": "fail"}, keep=False)
+        log_event("make_failed", exit=exit_code, duration=duration, log_path=log_path, text=text)
+        with MAKE_LOCK:
+            if MAKE_ACTIVE is self:
+                MAKE_ACTIVE = None
+
+    def result(self, exit_code, duration, log_path):
+        return {
+            "exit": exit_code,
+            "duration": duration,
+            "log_path": log_path,
+            "output": self.output,
+        }
+
+    def stop(self):
+        if not self.proc or self.proc.poll() is not None:
+            self.stopped = True
+            emit(self.ws, {"type": "make_status", "state": "idle"}, keep=False)
+            return
+
+        self.stopped = True
+        log_event("make_stop")
+        for sig, delay in (
+            (signal.SIGINT, 1.0),
+            (signal.SIGTERM, 1.0),
+            (signal.SIGKILL, 0.5),
+        ):
+            if self.proc.poll() is not None:
+                break
+            try:
+                os.killpg(self.proc.pid, sig)
+            except ProcessLookupError:
+                break
+            except OSError as exc:
+                emit(self.ws, {"type": "error", "text": "failed to end make: {}".format(exc)}, keep=True)
+                break
+            deadline = time.time() + delay
+            while time.time() < deadline:
+                if self.proc.poll() is not None:
+                    break
+                gevent.sleep(0.05)
+
+
+def start_make(ws):
+    global MAKE_ACTIVE, MAKE_RESULT
+
+    with MAKE_LOCK:
+        if MAKE_ACTIVE is not None and (MAKE_ACTIVE.proc is None or MAKE_ACTIVE.proc.poll() is None):
+            emit(ws, {"type": "make_status", "state": "running"}, keep=False)
+            return
+        MAKE_RESULT = None
+        job = MakeJob(ws=ws)
+        MAKE_ACTIVE = job
+    gevent.spawn(job.run)
+
+
+def stop_make(ws):
+    with MAKE_LOCK:
+        job = MAKE_ACTIVE
+    if job is None:
+        emit(ws, {"type": "make_status", "state": "idle"}, keep=False)
+        return
+    gevent.spawn(job.stop)
+
+
+def show_make_result(ws):
+    global MAKE_RESULT
+
+    with MAKE_LOCK:
+        result = MAKE_RESULT
+        MAKE_RESULT = None
+    if not result:
+        emit(ws, {"type": "make_status", "state": "idle"}, keep=False)
+        return
+    header = "make failed with exit {exit} in {duration:.1f}s\nlog: {log_path}\n".format(**result)
+    output = result.get("output") or ""
+    text = header
+    if output:
+        text += "\n" + output.rstrip()
+    emit(ws, {"type": "make_output", "text": text}, keep=True)
+    emit(ws, {"type": "make_status", "state": "idle"}, keep=False)
+
+
 def run_git_async(cmd, timeout):
     """Run a git command asynchronously without blocking the event loop."""
     proc = gsubprocess.Popen(
@@ -1733,6 +1915,12 @@ def handle_ws_message(ws, raw):
         start_codex_turn(ws, msg.get("text", ""))
     elif msg_type == "stop":
         stop_active(ws)
+    elif msg_type == "make_start":
+        start_make(ws)
+    elif msg_type == "make_stop":
+        stop_make(ws)
+    elif msg_type == "make_show":
+        show_make_result(ws)
     elif msg_type == "diff":
         gevent.spawn(run_diff, ws)
     elif msg_type == "files":
@@ -1818,6 +2006,14 @@ def websocket_route():
     with ACTIVE_LOCK:
         state = "running" if ACTIVE is not None and (ACTIVE.proc is None or ACTIVE.proc.poll() is None) else "idle"
     safe_send(ws, {"type": "status", "state": state})
+    with MAKE_LOCK:
+        if MAKE_ACTIVE is not None and (MAKE_ACTIVE.proc is None or MAKE_ACTIVE.proc.poll() is None):
+            make_state = "running"
+        elif MAKE_RESULT is not None:
+            make_state = "fail"
+        else:
+            make_state = "idle"
+    safe_send(ws, {"type": "make_status", "state": make_state})
 
     while True:
         try:
@@ -1839,6 +2035,20 @@ def parse_port(value):
     return port
 
 
+def is_git_work_tree(root):
+    try:
+        proc = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--is-inside-work-tree"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=2,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
 def configure(args):
     global ROOT, BASE_PATH, USER, PASSWORD, SECRET, LOG_DIR, LOG_PATH
 
@@ -1850,9 +2060,8 @@ def configure(args):
     LOG_DIR = os.path.join(ROOT, ".codex-web")
     LOG_PATH = os.path.join(LOG_DIR, "history.jsonl")
 
-    git_dir = os.path.join(ROOT, ".git")
-    if not os.path.isdir(git_dir):
-        print("warning: workspace root should contain a .git directory: {}".format(ROOT), file=sys.stderr)
+    if not is_git_work_tree(ROOT):
+        print("warning: workspace root should be inside a git worktree: {}".format(ROOT), file=sys.stderr)
 
 
 def main(argv=None):

@@ -1,16 +1,19 @@
 
+UV_CACHE_DIR := .uv-cache
+UV := UV_CACHE_DIR=$(UV_CACHE_DIR) uv
+
 all: .venv
-	uv run -m codez
+	$(UV) run -m codez
 
 serve: .venv
-	uv run -m codez --host 0.0.0.0
+	$(UV) run -m codez --host 0.0.0.0
 
 .venv: pyproject.toml
-	uv sync
+	$(UV) sync
 
 clean:
 	find . -name \*~ -o -name .\*~ | xargs rm -fr
 
 realclean: clean
-	rm -fr uv.lock .venv __pycache__ *.log
+	rm -fr uv.lock .venv .uv-cache __pycache__ *.log
 	tree -a -I .kelvin .

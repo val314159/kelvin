@@ -3,5 +3,7 @@
 \#*\#
 .\#*
 __pycache__
+.uv-cache
 .kelvin
 .codex-web
+make.log
