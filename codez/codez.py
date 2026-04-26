@@ -256,7 +256,14 @@ APP_HTML = """<!doctype html>
       color: var(--muted);
       font-size: .82rem;
       white-space: nowrap;
+      min-height: auto;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      font-weight: 400;
     }
+    .status:not(:disabled) { cursor: pointer; }
+    .status:disabled { opacity: 1; cursor: default; }
     .status-dot {
       width: .55rem;
       height: .55rem;
@@ -527,10 +534,10 @@ APP_HTML = """<!doctype html>
         <span class="repo" id="repoName"></span>
       </div>
       <div class="top-actions">
-        <span class="status" aria-live="polite">
+        <button class="status" id="statusBtn" type="button" aria-live="polite" disabled>
           <span class="status-dot" id="statusDot"></span>
           <span id="statusText">connecting</span>
-        </span>
+        </button>
         <a href="__LOGOUT_URL__">logout</a>
       </div>
     </header>
@@ -543,7 +550,7 @@ APP_HTML = """<!doctype html>
       <textarea id="prompt" placeholder="Ask Codex..." autocomplete="off"></textarea>
       <div class="button-row">
         <button class="primary" id="sendBtn" type="submit">Send</button>
-        <button class="danger" id="stopBtn" type="button" disabled>Stop</button>
+        <button id="makeBtn" type="button">Make</button>
         <button id="diffBtn" type="button">Diff</button>
         <button id="filesBtn" type="button">Files</button>
         <button id="clearBtn" type="button">Clear</button>
@@ -576,11 +583,12 @@ APP_HTML = """<!doctype html>
     const promptBox = document.getElementById("prompt");
     const composer = document.getElementById("composer");
     const sendBtn = document.getElementById("sendBtn");
-    const stopBtn = document.getElementById("stopBtn");
+    const makeBtn = document.getElementById("makeBtn");
     const diffBtn = document.getElementById("diffBtn");
     const filesBtn = document.getElementById("filesBtn");
     const clearBtn = document.getElementById("clearBtn");
     const runNote = document.getElementById("runNote");
+    const statusBtn = document.getElementById("statusBtn");
     const statusText = document.getElementById("statusText");
     const statusDot = document.getElementById("statusDot");
     const fileModal = document.getElementById("fileModal");
@@ -611,6 +619,8 @@ APP_HTML = """<!doctype html>
     }
 
     function connect() {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      setStatus("connecting");
       ws = new WebSocket(socketUrl());
       ws.addEventListener("open", () => {
         connected = true;
@@ -631,12 +641,10 @@ APP_HTML = """<!doctype html>
         connected = false;
         running = false;
         setStatus("error", "disconnected");
-        updateButtons();
       });
       ws.addEventListener("error", () => {
         connected = false;
         setStatus("error", "socket error");
-        updateButtons();
       });
     }
 
@@ -655,12 +663,17 @@ APP_HTML = """<!doctype html>
       statusDot.className = "status-dot " + state;
       running = state === "running";
       runNote.textContent = running ? "Codex is running." : "";
+      statusBtn.disabled = connected || label !== "disconnected";
+      statusBtn.title = statusBtn.disabled ? "" : "Reconnect";
       updateButtons();
     }
 
     function updateButtons() {
-      sendBtn.disabled = running || !connected;
-      stopBtn.disabled = !running || !connected;
+      sendBtn.textContent = running ? "Stop" : "Send";
+      sendBtn.classList.toggle("danger", running);
+      sendBtn.classList.toggle("primary", !running);
+      sendBtn.disabled = !connected;
+      makeBtn.disabled = running || !connected;
       diffBtn.disabled = !connected;
       filesBtn.disabled = !connected;
       clearBtn.disabled = false;
@@ -813,14 +826,24 @@ APP_HTML = """<!doctype html>
 
     composer.addEventListener("submit", (event) => {
       event.preventDefault();
+      if (running) {
+        sendMessage({ type: "stop" });
+        return;
+      }
       const text = promptBox.value.trim();
-      if (!text || running) return;
+      if (!text) return;
       if (sendMessage({ type: "prompt", text })) {
         promptBox.value = "";
       }
     });
 
-    stopBtn.addEventListener("click", () => sendMessage({ type: "stop" }));
+    makeBtn.addEventListener("click", () => {
+      if (running) return;
+      sendMessage({ type: "prompt", text: "run make and fix any failures" });
+    });
+    statusBtn.addEventListener("click", () => {
+      if (!connected) connect();
+    });
     diffBtn.addEventListener("click", () => sendMessage({ type: "diff" }));
     filesBtn.addEventListener("click", () => {
       openFiles();
