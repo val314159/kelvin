@@ -17,6 +17,7 @@ Options:
 """
 import sys; sys.dont_write_bytecode = True
 import gevent.monkey as _;_.patch_all()
+import hashlib
 import html
 import json
 import os
@@ -484,6 +485,29 @@ APP_HTML = """<!doctype html>
       padding: .8rem;
       line-height: 1.5;
     }
+    .editor-host {
+      min-height: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #090e15;
+    }
+    .editor-host .cm-editor {
+      min-height: min(34rem, calc(100dvh - 9rem));
+      background: #090e15;
+      color: var(--text);
+      font-size: 16px;
+    }
+    .editor-host .cm-content {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+    .editor-host textarea.editor-fallback {
+      min-height: min(34rem, calc(100dvh - 9rem));
+      border: 0;
+      border-radius: 0;
+      resize: none;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
     @media (max-width: 430px) {
       .button-row { grid-template-columns: repeat(5, minmax(3.25rem, 1fr)); gap: .35rem; }
       button { min-height: 2.65rem; font-size: .9rem; }
@@ -571,6 +595,10 @@ APP_HTML = """<!doctype html>
     let files = [];
     let currentFile = null;
     let markdownPretty = true;
+    let fileEditMode = false;
+    let editorView = null;
+    let editorFallback = null;
+    let codeMirrorPromise = null;
     let autoScroll = true;
     let scrollTimer = null;
 
@@ -773,6 +801,7 @@ APP_HTML = """<!doctype html>
       } else if (msg.type === "file") {
         currentFile = msg;
         markdownPretty = msg.mode === "markdown";
+        fileEditMode = false;
         renderFileViewer();
       } else if (msg.type === "error") {
         appendError(msg.text);
@@ -812,8 +841,10 @@ APP_HTML = """<!doctype html>
     }
 
     function closeFiles() {
+      destroyEditor();
       fileModal.hidden = true;
       currentFile = null;
+      fileEditMode = false;
     }
 
     function renderCloseOnlyActions() {
@@ -826,7 +857,9 @@ APP_HTML = """<!doctype html>
     }
 
     function renderFileList() {
+      destroyEditor();
       currentFile = null;
+      fileEditMode = false;
       modalTitle.textContent = "Files";
       renderCloseOnlyActions();
       modalBody.innerHTML = "";
@@ -858,6 +891,8 @@ APP_HTML = """<!doctype html>
 
     function renderFileViewer() {
       if (!currentFile) return;
+      destroyEditor();
+      fileEditMode = false;
       modalTitle.textContent = currentFile.path || "File";
       modalActions.innerHTML = "";
       const back = document.createElement("button");
@@ -874,6 +909,13 @@ APP_HTML = """<!doctype html>
           renderFileViewer();
         });
         modalActions.appendChild(toggle);
+      }
+      if (currentFile.editable) {
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.textContent = "Edit";
+        edit.addEventListener("click", renderFileEditor);
+        modalActions.appendChild(edit);
       }
       const close = document.createElement("button");
       close.type = "button";
@@ -897,6 +939,99 @@ APP_HTML = """<!doctype html>
         modalBody.appendChild(pre);
         if (window.hljs && language) hljs.highlightElement(code);
       }
+    }
+
+    function loadCodeMirror() {
+      if (!codeMirrorPromise) {
+        codeMirrorPromise = import("https://esm.sh/codemirror@6.0.1");
+      }
+      return codeMirrorPromise;
+    }
+
+    function destroyEditor() {
+      if (editorView) {
+        editorView.destroy();
+        editorView = null;
+      }
+      editorFallback = null;
+    }
+
+    function renderFileEditor() {
+      if (!currentFile || !currentFile.editable) return;
+      destroyEditor();
+      fileEditMode = true;
+      markdownPretty = false;
+      modalTitle.textContent = currentFile.path || "File";
+      modalActions.innerHTML = "";
+
+      const save = document.createElement("button");
+      save.type = "button";
+      save.textContent = "Save";
+      save.addEventListener("click", saveCurrentFile);
+      modalActions.appendChild(save);
+
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.textContent = "Cancel";
+      cancel.addEventListener("click", renderFileViewer);
+      modalActions.appendChild(cancel);
+
+      const close = document.createElement("button");
+      close.type = "button";
+      close.textContent = "Close";
+      close.addEventListener("click", closeFiles);
+      modalActions.appendChild(close);
+
+      modalBody.innerHTML = "";
+      const host = document.createElement("div");
+      host.className = "editor-host";
+      modalBody.appendChild(host);
+
+      loadCodeMirror()
+        .then((cm) => {
+          if (!fileEditMode || !currentFile) return;
+          editorView = new cm.EditorView({
+            doc: currentFile.text || "",
+            extensions: [
+              cm.basicSetup,
+              cm.EditorView.lineWrapping,
+              cm.EditorView.theme({
+                "&": { backgroundColor: "#090e15", color: "#edf2f7" },
+                ".cm-gutters": { backgroundColor: "#0f141d", color: "#9aa7b7", borderRightColor: "#28313f" },
+                ".cm-activeLine": { backgroundColor: "#131b27" },
+                ".cm-activeLineGutter": { backgroundColor: "#182231" },
+                ".cm-cursor": { borderLeftColor: "#edf2f7" },
+                ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "#254d8f" }
+              })
+            ],
+            parent: host
+          });
+          editorView.focus();
+        })
+        .catch(() => {
+          if (!fileEditMode || !currentFile) return;
+          editorFallback = document.createElement("textarea");
+          editorFallback.className = "editor-fallback";
+          editorFallback.value = currentFile.text || "";
+          host.appendChild(editorFallback);
+          editorFallback.focus();
+        });
+    }
+
+    function editorText() {
+      if (editorView) return editorView.state.doc.toString();
+      if (editorFallback) return editorFallback.value;
+      return currentFile ? currentFile.text || "" : "";
+    }
+
+    function saveCurrentFile() {
+      if (!currentFile) return;
+      sendMessage({
+        type: "write_file",
+        path: currentFile.path,
+        text: editorText(),
+        hash: currentFile.hash
+      });
     }
 
     function languageForPath(path, mode) {
@@ -1394,16 +1529,18 @@ def run_git_async(cmd, timeout):
         cwd=ROOT,
     )
     try:
-        with gevent.Timeout(timeout, False):
+        with gevent.Timeout(timeout):
             stdout, stderr = proc.communicate()
     except gevent.Timeout:
-        proc.kill()
-        proc.communicate()
+        try:
+            proc.kill()
+        finally:
+            proc.communicate()
         raise RuntimeError(f"git command timed out after {timeout}s")
-    
+
     if proc.returncode != 0:
         raise RuntimeError(stderr.strip() or "git command failed")
-    
+
     return stdout.rstrip()
 
 def run_diff(ws):
@@ -1490,8 +1627,66 @@ def read_file_for_view(path):
             raise ValueError("binary file")
         f.seek(0)
         data = f.read()
-    text = data.decode("utf-8", errors="replace")
-    return {"type": "file", "path": rel_path, "text": text, "mode": mode_for_path(rel_path)}
+    try:
+        text = data.decode("utf-8")
+        editable = True
+    except UnicodeDecodeError:
+        text = data.decode("utf-8", errors="replace")
+        editable = False
+    return {
+        "type": "file",
+        "path": rel_path,
+        "text": text,
+        "mode": mode_for_path(rel_path),
+        "hash": hashlib.sha256(data).hexdigest(),
+        "editable": editable,
+    }
+
+
+def write_file_from_view(path, text, expected_hash):
+    if not isinstance(text, str):
+        raise ValueError("file text must be a string")
+    if not isinstance(expected_hash, str) or not expected_hash:
+        raise ValueError("missing file version")
+
+    full_path, rel_path = safe_file_path(path)
+    if not os.path.isfile(full_path):
+        raise ValueError("file not found")
+    with open(full_path, "rb") as f:
+        sample = f.read(8192)
+        if b"\0" in sample:
+            raise ValueError("binary file")
+        f.seek(0)
+        old_data = f.read()
+
+    try:
+        old_data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("file is not UTF-8 editable")
+
+    current_hash = hashlib.sha256(old_data).hexdigest()
+    if current_hash != expected_hash:
+        raise ValueError("file changed on disk; reload before saving")
+
+    new_data = text.encode("utf-8")
+    if len(new_data) > MAX_FILE_SIZE:
+        raise ValueError("file is too large")
+
+    directory = os.path.dirname(full_path)
+    basename = os.path.basename(full_path)
+    tmp_path = os.path.join(directory, ".{}.tmp.{}.{}".format(basename, os.getpid(), time.time_ns()))
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(new_data)
+        os.replace(tmp_path, full_path)
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    return read_file_for_view(rel_path)
 
 
 def clear_scrollback():
@@ -1522,6 +1717,17 @@ def handle_ws_message(ws, raw):
     elif msg_type == "file":
         try:
             emit(ws, read_file_for_view(msg.get("path")), keep=False)
+        except ValueError as exc:
+            emit(ws, {"type": "error", "text": str(exc)}, keep=True)
+    elif msg_type == "write_file":
+        try:
+            file_payload = write_file_from_view(msg.get("path"), msg.get("text"), msg.get("hash"))
+            emit(ws, {"type": "files", "files": list_files()}, keep=False)
+            emit(
+                ws,
+                file_payload,
+                keep=False,
+            )
         except ValueError as exc:
             emit(ws, {"type": "error", "text": str(exc)}, keep=True)
     elif msg_type == "clear":
